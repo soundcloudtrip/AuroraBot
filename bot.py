@@ -18,7 +18,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     LabeledPrice,
-    Update,
+    Update,WebAppInfo  
 )
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -29,7 +29,7 @@ from telegram.ext import (
     ConversationHandler,
     MessageHandler,
     PreCheckoutQueryHandler,
-    filters,
+    filters
 )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -148,7 +148,41 @@ def grant_premium(user_id: int, days: int = 7) -> str:
         )
     return until
 
-
+async def handle_web_app_data(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработка данных из Web App"""
+    web_app_data = update.effective_message.web_app_data
+    if web_app_data:
+        data = web_app_data.data
+        user = update.effective_user
+        
+        logger.info(f"Web App data from {user.id}: {data}")
+        
+        # Парсим данные (ожидаем JSON)
+        try:
+            import json
+            data_dict = json.loads(data)
+            
+            action = data_dict.get('action')
+            
+            if action == 'oracle':
+                await cmd_oracle(update, context)
+            elif action == 'compatibility':
+                context.user_data['my_date'] = data_dict.get('my_date')
+                context.user_data['partner_date'] = data_dict.get('partner_date')
+                await cmd_compatibility(update, context)
+            elif action == 'chat':
+                context.user_data['chat_text'] = data_dict.get('text')
+                await cmd_chat_analysis(update, context)
+            elif action == 'flirt':
+                context.user_data['flirt_text'] = data_dict.get('text')
+                await cmd_flirt(update, context)
+                
+        except Exception as e:
+            logger.error(f"Error parsing web app data: {e}")
+            await update.effective_message.reply_text(
+                "❌ Ошибка обработки данных",
+                reply_markup=main_keyboard()
+            )
 def check_premium(user_id: int) -> bool:
     with db() as c:
         row = c.execute(
@@ -527,7 +561,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                         )
                     except Exception:
                         pass
-
+    keyboard.inline_keyboard.append([
+    InlineKeyboardButton(
+    "🌐 Открыть Web App", 
+    web_app=WebAppInfo(url="https://soundcloudtrip.github.io/AuroraBot/")  # Замените на реальный URL!
+        )])
     prem_badge = "⭐ Премиум" if check_premium(user.id) else "🆓 Бесплатный"
     await update.message.reply_text(
         f"🔮 Привет, {user.first_name}! Я твой оракул по любви и флирту.\n\n"
@@ -1081,7 +1119,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Выбирай 👇",
         reply_markup=keyboard,
     )
-from telegram import WebAppInfo
+
 
 async def cmd_webapp(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отправляет кнопку с Web App"""
@@ -1096,6 +1134,7 @@ async def cmd_webapp(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 def main() -> None:
+    app.add_handler(MessageHandler(filters.StatusUpdate.WEB_APP_DATA, handle_web_app_data))
     init_db()
     logger.info("Запуск AI Dating Oracle Bot...")
 

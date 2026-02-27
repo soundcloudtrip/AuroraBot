@@ -6,7 +6,7 @@ tg.expand();
 // Конфигурация
 const CONFIG = {
     BOT_USERNAME: 'AuroraWhisperBot', // Замените на username вашего бота
-    API_BASE: 'https://your-api.com', // URL вашего бэкенда (если нужен)
+    API_BASE: 'https://soundcloudtrip.github.io/AuroraBot/', // URL вашего бэкенда (если нужен)
     FREE_DAILY_LIMIT: 5,
     STARS_DAY: 80,
     STARS_MONTH: 250,
