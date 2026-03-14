@@ -32,50 +32,40 @@ const userStatus     = $('userStatus');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // СХЕМА:
-// 1. Пользователь нажимает кнопку
-// 2. tg.sendData() → апп закрывается → бот получает данные
-// 3. Бот вызывает AI, сохраняет результат в БД
-// 4. Бот пишет результат в чат + кнопку "Открыть в апп"
-// 5. Пользователь нажимает кнопку → апп открывается снова
-// 6. Апп при старте читает результат из БД через GET /result
+// 1. Пользователь нажимает кнопку — апп НЕ закрывается
+// 2. Прямой вызов /api/ai прямо из мини-апп
+// 3. Результат появляется внутри апп — магия без перехода!
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function checkForResult() {
-    if (!state.user || !state.user.id) return;
+async function checkForResult() {}  // больше не нужна
 
-    // Проверяем есть ли результат в БД
-    try {
-        const res  = await fetch(`${CONFIG.API}/result?user_id=${state.user.id}`);
-        const data = await res.json();
-
-        if (data.ok && data.result) {
-            // Есть результат — показываем нужную страницу
-            const actionPageMap = {
-                oracle:        'oracle',
-                compatibility: 'compatibility',
-                chat:          'chat',
-                flirt:         'flirt'
-            };
-            const page = actionPageMap[data.action] || 'oracle';
-            navigateTo(page);
-
-            // Ждём чуть чтобы страница отрендерилась
-            setTimeout(() => {
-                const contentId = data.action + 'Content';
-                const resultId  = data.action + 'Result';
-                showResult(resultId, contentId, data.result);
-                showToast('Результат получен! 🔮', 'success');
-            }, 300);
-        }
-    } catch(e) {
-        // Нет результата или сервер недоступен — просто показываем главную
-    }
+async function callAI(payload) {
+    const res = await fetch(`${CONFIG.API}/api/ai`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            ...payload,
+            first_name: state.user.first_name || 'подруга'
+        })
+    });
+    const data = await res.json();
+    if (data.ok && data.result) return data.result;
+    throw new Error(data.error || 'Нет ответа от сервера');
 }
 
-function sendToBotAndClose(payload) {
-    // tg.sendData закрывает апп и передаёт данные боту
-    // Бот обработает и отправит результат в чат + кнопку открыть апп
-    tg.sendData(JSON.stringify(payload));
+function setButtonLoading(btnId, loading, originalText) {
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+    if (loading) {
+        btn.dataset.origHtml = btn.innerHTML;
+        btn.innerHTML = `<span style="display:inline-block;width:16px;height:16px;border:2px solid rgba(255,255,255,0.4);border-top-color:#fff;border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:8px"></span>Оракул думает...`;
+        btn.disabled = true;
+        btn.style.opacity = '0.75';
+    } else {
+        btn.innerHTML = btn.dataset.origHtml || originalText || btn.innerHTML;
+        btn.disabled = false;
+        btn.style.opacity = '1';
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -170,7 +160,7 @@ function renderOracle() {
         <span>🔮 Получить расклад</span>
       </button>
       <p style="margin-top:12px;font-size:13px;color:var(--text-secondary);text-align:center;">
-        После нажатия бот пришлёт результат в чат с кнопкой открыть апп
+        Нажми и расклад появится прямо здесь ✨
       </p>
     </div>
     <div id="oracleResult" class="card hidden"><div id="oracleContent"></div></div>`;
@@ -189,9 +179,7 @@ function renderCompat() {
         <input type="text" class="input-field" id="partnerDate" placeholder="20.08.1994" value="${state.compatibility.partnerDate}">
       </div>
       <button class="btn" id="compatBtn" onclick="calculateCompatibility()">Рассчитать совместимость</button>
-      <p style="margin-top:8px;font-size:13px;color:var(--text-secondary);text-align:center;">
-        Результат придёт в чат с кнопкой открыть апп
-      </p>
+
     </div>
     <div id="compatResult" class="card hidden"><div id="compatContent"></div></div>`;
 }
@@ -265,42 +253,76 @@ function renderReferral() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI функции — отправляют данные боту через sendData (закрывает апп)
-// Бот обработает и отправит результат в чат с кнопкой вернуться в апп
+// AI функции — прямой вызов /api/ai, результат показывается прямо в апп
 // ─────────────────────────────────────────────────────────────────────────────
 
-function getOracle() {
+async function getOracle() {
     if (!checkLimit()) return;
-    const today = new Date().toLocaleDateString('ru-RU',{weekday:'long',day:'numeric',month:'long'});
-    showToast('Отправляю запрос боту...', 'success');
-    setTimeout(() => sendToBotAndClose({ action: 'oracle', message: 'Расклад на ' + today }), 500);
+    setButtonLoading('oracleBtn', true);
+    try {
+        const result = await callAI({ action: 'oracle' });
+        incrementUsage();
+        showResult('oracleResult', 'oracleContent', result);
+        showToast('Расклад готов! 🔮', 'success');
+    } catch(e) {
+        showToast('Ошибка связи с оракулом 😔', 'error');
+    } finally {
+        setButtonLoading('oracleBtn', false);
+    }
 }
 
-function calculateCompatibility() {
+async function calculateCompatibility() {
     const myDate = ($('myDate')||{}).value||'';
     const pd     = ($('partnerDate')||{}).value||'';
     if (!myDate||!pd) { showToast('Введите обе даты','warning'); return; }
     if (!/^\d{2}\.\d{2}\.\d{4}$/.test(myDate)||!/^\d{2}\.\d{2}\.\d{4}$/.test(pd)) { showToast('Формат: ДД.ММ.ГГГГ','error'); return; }
     state.compatibility = { myDate, partnerDate: pd };
     if (!checkLimit()) return;
-    showToast('Отправляю запрос боту...', 'success');
-    setTimeout(() => sendToBotAndClose({ action: 'compatibility', my_date: myDate, partner_date: pd }), 500);
+    setButtonLoading('compatBtn', true);
+    try {
+        const result = await callAI({ action: 'compatibility', my_date: myDate, partner_date: pd });
+        incrementUsage();
+        showResult('compatResult', 'compatContent', result);
+        showToast('Совместимость рассчитана! 💑', 'success');
+    } catch(e) {
+        showToast('Ошибка связи с оракулом 😔', 'error');
+    } finally {
+        setButtonLoading('compatBtn', false);
+    }
 }
 
-function analyzeChat() {
+async function analyzeChat() {
     const txt = ($('chatText')||{}).value||'';
     if (txt.length<10) { showToast('Минимум 10 символов','warning'); return; }
     if (!checkLimit()) return;
-    showToast('Отправляю запрос боту...', 'success');
-    setTimeout(() => sendToBotAndClose({ action: 'chat', message: txt }), 500);
+    setButtonLoading('chatBtn', true);
+    try {
+        const result = await callAI({ action: 'chat', message: txt });
+        incrementUsage();
+        showResult('chatResult', 'chatContent', result);
+        showToast('Анализ готов! 🔍', 'success');
+    } catch(e) {
+        showToast('Ошибка связи с оракулом 😔', 'error');
+    } finally {
+        setButtonLoading('chatBtn', false);
+    }
 }
 
-function generateFlirt() {
+async function generateFlirt() {
     const msg = (($('flirtMessage')||{}).value||'').trim();
     if (msg.length<2) { showToast('Введите сообщение','warning'); return; }
     if (!checkLimit()) return;
-    showToast('Отправляю запрос боту...', 'success');
-    setTimeout(() => sendToBotAndClose({ action: 'flirt', message: msg }), 500);
+    setButtonLoading('flirtBtn', true);
+    try {
+        const result = await callAI({ action: 'flirt', message: msg });
+        incrementUsage();
+        showResult('flirtResult', 'flirtContent', result);
+        showToast('Варианты готовы! ✨', 'success');
+    } catch(e) {
+        showToast('Ошибка связи с оракулом 😔', 'error');
+    } finally {
+        setButtonLoading('flirtBtn', false);
+    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
