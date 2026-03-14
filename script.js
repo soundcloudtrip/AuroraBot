@@ -4,17 +4,18 @@ tg.expand();
 
 const CONFIG = {
     BOT_USERNAME: 'AuroraWhisperBot',
-    BOT_TOKEN: '8671869643:AAEzMnIEzVYH4nEz3b6JoaIgnDRZNTnc_fM',
     FREE_DAILY_LIMIT: 5,
     STARS_DAY: 80,
     STARS_MONTH: 250,
-    STARS_HALFYEAR: 1500
+    STARS_HALFYEAR: 1500,
+    API: 'https://dating-similar-carolina-luke.trycloudflare.com'
 };
 
 const state = {
     user: null,
     currentPage: 'home',
-    compatibility: { myDate: '', partnerDate: '' }
+    compatibility: { myDate: '', partnerDate: '' },
+    pendingAction: null
 };
 
 const $ = id => document.getElementById(id);
@@ -30,72 +31,61 @@ const userName       = $('userName');
 const userStatus     = $('userStatus');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ОТПРАВКА ЗАПРОСА БОТУ через answerWebAppQuery
-// Бот получает запрос, вызывает g4f, возвращает результат
+// СХЕМА:
+// 1. Пользователь нажимает кнопку
+// 2. tg.sendData() → апп закрывается → бот получает данные
+// 3. Бот вызывает AI, сохраняет результат в БД
+// 4. Бот пишет результат в чат + кнопку "Открыть в апп"
+// 5. Пользователь нажимает кнопку → апп открывается снова
+// 6. Апп при старте читает результат из БД через GET /result
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function askBot(payload) {
-    const queryId = tg.initDataUnsafe && tg.initDataUnsafe.query_id
-        ? tg.initDataUnsafe.query_id
-        : null;
+async function checkForResult() {
+    if (!state.user || !state.user.id) return;
 
-    if (!queryId) {
-        // Если нет query_id — апп открыта не через inline режим
-        // Используем прямой запрос к боту через sendMessage как фолбэк
-        throw new Error('Открой апп через кнопку в боте');
-    }
-
-    // Шаг 1: отправляем боту запрос через sendMessage с данными
-    const chatId = state.user.id;
-    await fetch(`https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            chat_id: chatId,
-            text: JSON.stringify({ ...payload, query_id: queryId, _webapp: true }),
-        })
-    });
-
-    // Шаг 2: ждём ответа от бота (polling результата)
-    return await pollForResult(queryId);
-}
-
-// Опрашиваем бота каждую секунду пока не придёт ответ
-async function pollForResult(queryId, maxWait = 60) {
-    for (let i = 0; i < maxWait; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-
-        const res = await fetch(
-            `https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/getUpdates?timeout=1&allowed_updates=["message"]`
-        );
+    // Проверяем есть ли результат в БД
+    try {
+        const res  = await fetch(`${CONFIG.API}/result?user_id=${state.user.id}`);
         const data = await res.json();
 
         if (data.ok && data.result) {
-            for (const update of data.result) {
-                const msg = update.message;
-                if (msg && msg.text && msg.text.startsWith('__RESULT__:')) {
-                    const result = msg.text.replace('__RESULT__:', '').trim();
-                    // Удаляем это сообщение чтобы не мешало
-                    await fetch(`https://api.telegram.org/bot${CONFIG.BOT_TOKEN}/deleteMessage`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ chat_id: state.user.id, message_id: msg.message_id })
-                    });
-                    return result;
-                }
-            }
+            // Есть результат — показываем нужную страницу
+            const actionPageMap = {
+                oracle:        'oracle',
+                compatibility: 'compatibility',
+                chat:          'chat',
+                flirt:         'flirt'
+            };
+            const page = actionPageMap[data.action] || 'oracle';
+            navigateTo(page);
+
+            // Ждём чуть чтобы страница отрендерилась
+            setTimeout(() => {
+                const contentId = data.action + 'Content';
+                const resultId  = data.action + 'Result';
+                showResult(resultId, contentId, data.result);
+                showToast('Результат получен! 🔮', 'success');
+            }, 300);
         }
+    } catch(e) {
+        // Нет результата или сервер недоступен — просто показываем главную
     }
-    throw new Error('Бот не ответил за 60 секунд');
+}
+
+function sendToBotAndClose(payload) {
+    // tg.sendData закрывает апп и передаёт данные боту
+    // Бот обработает и отправит результат в чат + кнопку открыть апп
+    tg.sendData(JSON.stringify(payload));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Инициализация
 // ─────────────────────────────────────────────────────────────────────────────
 
-function initApp() {
+async function initApp() {
     const d = tg.initDataUnsafe;
     state.user = (d && d.user) ? d.user : { id: 0, first_name: 'Гость', username: '' };
+
     const key = 'u_' + new Date().toDateString();
     state.userData = {
         is_premium:  false,
@@ -105,10 +95,14 @@ function initApp() {
     };
     localStorage.setItem('ref', state.userData.ref_code);
     updateUserInfo();
-    setTimeout(() => {
+
+    setTimeout(async () => {
         splashScreen.classList.add('hidden');
         mainApp.classList.remove('hidden');
         loadPage('home');
+
+        // Проверяем есть ли ожидающий результат от бота
+        await checkForResult();
     }, 1200);
 }
 
@@ -172,7 +166,12 @@ function renderOracle() {
     return `<div class="card">
       <h2 class="card-title">🌙 Оракул дня</h2>
       <p class="card-subtitle">Узнай, что звёзды приготовили для тебя сегодня</p>
-      <button class="btn btn-icon" id="oracleBtn" onclick="getOracle()"><span>🔮 Получить расклад</span></button>
+      <button class="btn btn-icon" id="oracleBtn" onclick="getOracle()">
+        <span>🔮 Получить расклад</span>
+      </button>
+      <p style="margin-top:12px;font-size:13px;color:var(--text-secondary);text-align:center;">
+        После нажатия бот пришлёт результат в чат с кнопкой открыть апп
+      </p>
     </div>
     <div id="oracleResult" class="card hidden"><div id="oracleContent"></div></div>`;
 }
@@ -190,6 +189,9 @@ function renderCompat() {
         <input type="text" class="input-field" id="partnerDate" placeholder="20.08.1994" value="${state.compatibility.partnerDate}">
       </div>
       <button class="btn" id="compatBtn" onclick="calculateCompatibility()">Рассчитать совместимость</button>
+      <p style="margin-top:8px;font-size:13px;color:var(--text-secondary);text-align:center;">
+        Результат придёт в чат с кнопкой открыть апп
+      </p>
     </div>
     <div id="compatResult" class="card hidden"><div id="compatContent"></div></div>`;
 }
@@ -263,81 +265,54 @@ function renderReferral() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// AI функции
+// AI функции — отправляют данные боту через sendData (закрывает апп)
+// Бот обработает и отправит результат в чат с кнопкой вернуться в апп
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function getOracle() {
+function getOracle() {
     if (!checkLimit()) return;
     const today = new Date().toLocaleDateString('ru-RU',{weekday:'long',day:'numeric',month:'long'});
-    await doAiRequest('oracleBtn','oracleResult','oracleContent',
-        { action:'oracle', message:'Расклад на ' + today });
+    showToast('Отправляю запрос боту...', 'success');
+    setTimeout(() => sendToBotAndClose({ action: 'oracle', message: 'Расклад на ' + today }), 500);
 }
 
-async function calculateCompatibility() {
+function calculateCompatibility() {
     const myDate = ($('myDate')||{}).value||'';
     const pd     = ($('partnerDate')||{}).value||'';
-    if (!myDate||!pd)                                           { showToast('Введите обе даты','warning'); return; }
+    if (!myDate||!pd) { showToast('Введите обе даты','warning'); return; }
     if (!/^\d{2}\.\d{2}\.\d{4}$/.test(myDate)||!/^\d{2}\.\d{2}\.\d{4}$/.test(pd)) { showToast('Формат: ДД.ММ.ГГГГ','error'); return; }
     state.compatibility = { myDate, partnerDate: pd };
     if (!checkLimit()) return;
-    await doAiRequest('compatBtn','compatResult','compatContent',
-        { action:'compatibility', my_date:myDate, partner_date:pd });
+    showToast('Отправляю запрос боту...', 'success');
+    setTimeout(() => sendToBotAndClose({ action: 'compatibility', my_date: myDate, partner_date: pd }), 500);
 }
 
-async function analyzeChat() {
+function analyzeChat() {
     const txt = ($('chatText')||{}).value||'';
     if (txt.length<10) { showToast('Минимум 10 символов','warning'); return; }
     if (!checkLimit()) return;
-    await doAiRequest('chatBtn','chatResult','chatContent',
-        { action:'chat', message:txt });
+    showToast('Отправляю запрос боту...', 'success');
+    setTimeout(() => sendToBotAndClose({ action: 'chat', message: txt }), 500);
 }
 
-async function generateFlirt() {
+function generateFlirt() {
     const msg = (($('flirtMessage')||{}).value||'').trim();
     if (msg.length<2) { showToast('Введите сообщение','warning'); return; }
     if (!checkLimit()) return;
-    await doAiRequest('flirtBtn','flirtResult','flirtContent',
-        { action:'flirt', message:msg });
-}
-
-async function doAiRequest(btnId, resultId, contentId, payload) {
-    setBtn(btnId, true);
-    showThinking(resultId, contentId);
-    try {
-        const text = await askBot(payload);
-        showResult(resultId, contentId, text);
-        incrementUsage();
-        showToast('Готово! 🔮','success');
-    } catch(e) {
-        showResult(resultId, contentId, '❌ ' + e.message);
-        showToast('Ошибка','error');
-    } finally {
-        setBtn(btnId, false);
-    }
+    showToast('Отправляю запрос боту...', 'success');
+    setTimeout(() => sendToBotAndClose({ action: 'flirt', message: msg }), 500);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // UI утилиты
 // ─────────────────────────────────────────────────────────────────────────────
 
-function setBtn(id, loading) {
-    const b=$(id); if(!b) return;
-    if(loading){b.disabled=true;b._orig=b.innerHTML;b.innerHTML='⏳ Думаю...';}
-    else{b.disabled=false;b.innerHTML=b._orig||b.innerHTML;}
-}
-
-function showThinking(resultId, contentId) {
-    const c=$(resultId),d=$(contentId);
-    if(c) c.classList.remove('hidden');
-    if(d) d.innerHTML='<div style="display:flex;align-items:center;gap:8px;color:var(--text-secondary)"><span>✨</span><span>Оракул думает...</span></div>';
-}
-
 function showResult(resultId, contentId, text) {
-    const c=$(resultId),d=$(contentId);
-    if(!c||!d) return;
-    d.innerHTML=text.split('\n').filter(l=>l.trim()).map(l=>`<p style="margin-bottom:10px">${l}</p>`).join('');
+    const c=$(resultId), d=$(contentId);
+    if (!c||!d) return;
+    d.innerHTML = text.split('\n').filter(l=>l.trim()).map(l=>`<p style="margin-bottom:10px">${l}</p>`).join('');
     c.classList.remove('hidden');
-    c.scrollIntoView({behavior:'smooth',block:'start'});
+    c.scrollIntoView({behavior:'smooth', block:'start'});
 }
 
 function incrementUsage() {
@@ -349,8 +324,8 @@ function incrementUsage() {
 }
 
 function checkLimit() {
-    if(state.userData.is_premium) return true;
-    if(state.userData.today_usage>=CONFIG.FREE_DAILY_LIMIT) {
+    if (state.userData.is_premium) return true;
+    if (state.userData.today_usage >= CONFIG.FREE_DAILY_LIMIT) {
         showModal(`<h2 class="card-title">🔒 Лимит исчерпан</h2>
             <p>Все ${CONFIG.FREE_DAILY_LIMIT} бесплатных запросов использованы.</p>
             <p style="margin-top:10px;color:var(--text-secondary)">Лимит сбросится завтра.</p>
@@ -376,39 +351,43 @@ function buyPremium(days)    { tg.openTelegramLink(`https://t.me/${CONFIG.BOT_US
 function generateAdminLink() { tg.openTelegramLink(`https://t.me/${CONFIG.BOT_USERNAME}?start=adminref`); showToast('Создаю ссылку...','success'); }
 
 function copyReferral(text) {
-    (navigator.clipboard?navigator.clipboard.writeText(text):Promise.reject())
+    (navigator.clipboard ? navigator.clipboard.writeText(text) : Promise.reject())
         .catch(()=>{const t=document.createElement('textarea');t.value=text;document.body.appendChild(t);t.select();document.execCommand('copy');document.body.removeChild(t);})
         .finally(()=>showToast('Скопировано!','success'));
 }
 
 function shareReferral() {
     const t=`🔮 Присоединяйся!\nhttps://t.me/${CONFIG.BOT_USERNAME}?start=ref=${state.userData.ref_code}`;
-    if(tg.shareToStory) tg.shareToStory(t); else {copyReferral(t);showToast('Ссылка скопирована!','success');}
+    if(tg.shareToStory) tg.shareToStory(t); else {copyReferral(t); showToast('Ссылка скопирована!','success');}
 }
 
-function showToast(msg,type='info'){toast.textContent=msg;toast.className='toast '+type;toast.classList.remove('hidden');setTimeout(()=>toast.classList.add('hidden'),3000);}
-function showModal(html) {modalBody.innerHTML=html;modal.classList.remove('hidden');}
-function closeModal()    {modal.classList.add('hidden');}
-function openSidebar()   {sidebar.classList.add('open');sidebarOverlay.classList.add('active');}
-function closeSidebar()  {sidebar.classList.remove('open');sidebarOverlay.classList.remove('active');}
+function showToast(msg, type='info') {
+    toast.textContent=msg; toast.className='toast '+type;
+    toast.classList.remove('hidden');
+    setTimeout(()=>toast.classList.add('hidden'), 3000);
+}
+function showModal(html)  { modalBody.innerHTML=html; modal.classList.remove('hidden'); }
+function closeModal()     { modal.classList.add('hidden'); }
+function openSidebar()    { sidebar.classList.add('open'); sidebarOverlay.classList.add('active'); }
+function closeSidebar()   { sidebar.classList.remove('open'); sidebarOverlay.classList.remove('active'); }
 
-document.addEventListener('DOMContentLoaded',()=>{
+document.addEventListener('DOMContentLoaded', () => {
     initApp();
-    $('menuBtn').addEventListener('click',openSidebar);
-    $('closeSidebarBtn').addEventListener('click',closeSidebar);
-    sidebarOverlay.addEventListener('click',closeSidebar);
-    $('profileBtn').addEventListener('click',()=>navigateTo('profile'));
+    $('menuBtn').addEventListener('click', openSidebar);
+    $('closeSidebarBtn').addEventListener('click', closeSidebar);
+    sidebarOverlay.addEventListener('click', closeSidebar);
+    $('profileBtn').addEventListener('click', ()=>navigateTo('profile'));
     document.querySelectorAll('.nav-item,.bottom-nav-item').forEach(el=>{
-        el.addEventListener('click',e=>{const p=e.currentTarget.dataset.page;if(p)navigateTo(p);});
+        el.addEventListener('click', e=>{const p=e.currentTarget.dataset.page; if(p) navigateTo(p);});
     });
-    $('modalClose').addEventListener('click',closeModal);
-    modal.addEventListener('click',e=>{if(e.target===modal)closeModal();});
+    $('modalClose').addEventListener('click', closeModal);
+    modal.addEventListener('click', e=>{if(e.target===modal) closeModal();});
 });
 
-tg.onEvent('mainButtonClicked',()=>tg.close());
+tg.onEvent('mainButtonClicked', ()=>tg.close());
 
-window.navigateTo=navigateTo;window.getOracle=getOracle;
-window.calculateCompatibility=calculateCompatibility;window.analyzeChat=analyzeChat;
-window.generateFlirt=generateFlirt;window.showPremiumPlans=showPremiumPlans;
-window.buyPremium=buyPremium;window.generateAdminLink=generateAdminLink;
-window.copyReferral=copyReferral;window.shareReferral=shareReferral;window.closeModal=closeModal;
+window.navigateTo=navigateTo; window.getOracle=getOracle;
+window.calculateCompatibility=calculateCompatibility; window.analyzeChat=analyzeChat;
+window.generateFlirt=generateFlirt; window.showPremiumPlans=showPremiumPlans;
+window.buyPremium=buyPremium; window.generateAdminLink=generateAdminLink;
+window.copyReferral=copyReferral; window.shareReferral=shareReferral; window.closeModal=closeModal;
