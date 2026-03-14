@@ -40,60 +40,33 @@ const userStatus = document.getElementById('userStatus');
 // AI API — вызов Anthropic прямо из мини-апп
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function callAI(systemPrompt, userMessage) {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+// ─────────────────────────────────────────────────────────────────────────────
+// AI API — запросы идут через прокси в bot.py (порт 8000)
+// Замени YOUR_SERVER_IP на IP или домен своего сервера где запущен bot.py
+// ─────────────────────────────────────────────────────────────────────────────
+
+const API_URL = 'http://YOUR_SERVER_IP:8000/api/ai'; // ← ЗАМЕНИТЬ
+
+async function callAI(action, userMessage) {
+    const response = await fetch(API_URL, {
         method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-            model: 'claude-sonnet-4-20250514',
-            max_tokens: 1000,
-            system: systemPrompt,
-            messages: [
-                { role: 'user', content: userMessage }
-            ]
+            action:      action,
+            message:     userMessage,
+            first_name:  state.user?.first_name || 'Гость'
         })
     });
 
     if (!response.ok) {
-        throw new Error('Ошибка AI: ' + response.status);
+        throw new Error('Ошибка сервера: ' + response.status);
     }
 
     const data = await response.json();
-    return data.content.map(b => b.text || '').join('');
+    if (data.error) throw new Error(data.error);
+    return data.result;
 }
 
-// Системные промпты для каждой функции
-const PROMPTS = {
-    oracle: `Ты — мистический AI-оракул любви и флирта. Отвечай всегда на русском языке.
-Дай пользователю персональный романтический расклад на сегодня: энергетику дня, совет по отношениям, 
-на что обратить внимание в общении с противоположным полом, и короткое предсказание.
-Пиши красиво, с эмодзи, мистически и вдохновляюще. Объём — 150-200 слов.`,
-
-    compatibility: `Ты — эксперт по нумерологии и астрологии, специализируешься на совместимости пар. 
-Отвечай всегда на русском языке. По двум датам рождения дай развёрнутый анализ совместимости:
-- Общий процент совместимости (придумай реалистичное число)
-- Сильные стороны пары
-- Зоны роста и возможные конфликты
-- Совет для гармоничных отношений
-Пиши с эмодзи, тепло и конструктивно. Объём — 200-250 слов.`,
-
-    chat: `Ты — психолог по отношениям и эксперт по коммуникации. Отвечай всегда на русском языке.
-Проанализируй предоставленную переписку и дай:
-- Оценку заинтересованности собеседника (по шкале 1-10)
-- Анализ тональности и намерений
-- На что стоит обратить внимание
-- Конкретные советы как развить общение
-Пиши дружелюбно, с эмодзи, практично. Объём — 150-200 слов.`,
-
-    flirt: `Ты — мастер флирта и романтического общения. Отвечай всегда на русском языке.
-На сообщение от парня придумай 3 варианта остроумных, игривых и привлекательных ответов:
-1. 😊 Лёгкий и кокетливый
-2. 🔥 Дерзкий и уверенный  
-3. 💫 Загадочный и интригующий
-Для каждого варианта дай короткое пояснение, почему он работает. Объём — 150-200 слов.`
-};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Инициализация
@@ -495,7 +468,7 @@ async function getOracle() {
             weekday: 'long', day: 'numeric', month: 'long'
         });
         const result = await callAI(
-            PROMPTS.oracle,
+            'oracle',
             `Дай расклад на сегодня — ${today}. Имя пользователя: ${state.user.first_name}.`
         );
         showResultCard('oracleResult', 'oracleContent', result);
@@ -534,7 +507,7 @@ async function calculateCompatibility() {
 
     try {
         const result = await callAI(
-            PROMPTS.compatibility,
+            'compatibility',
             `Рассчитай совместимость. Моя дата рождения: ${myDate}. Дата рождения партнёра: ${partnerDate}. Имя: ${state.user.first_name}.`
         );
         showResultCard('compatResult', 'compatContent', result);
@@ -565,7 +538,7 @@ async function analyzeChat() {
 
     try {
         const result = await callAI(
-            PROMPTS.chat,
+            'chat',
             `Проанализируй эту переписку:\n\n${chatText}`
         );
         showResultCard('chatResult', 'chatContent', result);
@@ -596,7 +569,7 @@ async function generateFlirt() {
 
     try {
         const result = await callAI(
-            PROMPTS.flirt,
+            'flirt',
             `Придумай ответы на это сообщение от парня: "${message}"`
         );
         showResultCard('flirtResult', 'flirtContent', result);
