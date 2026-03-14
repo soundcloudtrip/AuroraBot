@@ -715,3 +715,11 @@ body {
 .shake {
     animation: shake 0.3s ease;
 }
+/* Button loading spinner */
+.btn:disabled {
+    cursor: not-allowed;
+}
+
+@keyframes btn-spin {
+    to { transform: rotate(360deg); }
+}
