@@ -10,7 +10,7 @@ const CONFIG = {
     STARS_HALFYEAR: 1500,
     // ⚠️ ЗАМЕНИ на IP или домен сервера где запущен bot.py
     // Например: 'http://185.123.45.67:8000'
-    API: 'https://suites-championship-norm-belkin.trycloudflare.com'
+    API: 'https://dating-similar-carolina-luke.trycloudflare.com'
 };
 
 const state = {
